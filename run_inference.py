@@ -3,154 +3,153 @@ import time
 import argparse
 import torch
 import os
+import gc
 
-def read_prompt(file_path="prompts.txt"):
+def read_prompts(file_path="prompts.txt", num_prompts=16):
+    """Read 16 prompts from file (5-line prompts separated by blank lines)"""
     with open(file_path, 'r', encoding='utf-8') as f:
-        prompt = f.read().strip()
-    if len(prompt) > 2000:
-        prompt = prompt[:2000]
-    return prompt
+        content = f.read().strip()
+    
+    prompt_blocks = [block.strip() for block in content.split('\n\n') if block.strip()]
+    
+    prompts = []
+    for block in prompt_blocks:
+        single_prompt = ' '.join(line.strip() for line in block.split('\n') if line.strip())
+        if single_prompt:
+            prompts.append(single_prompt[:2000])
+    
+    while len(prompts) < num_prompts:
+        if prompts:
+            prompts.append(prompts[0])
+        else:
+            single_prompt = ' '.join(line.strip() for line in content.split('\n') if line.strip())
+            prompts = [single_prompt[:2000]] * num_prompts
+            break
+    
+    return prompts[:num_prompts]
 
-def setup_vllm(quantization="fp16"):
-    from vllm import LLM, SamplingParams
-    
-    dtype = "float16" if quantization == "fp16" else "float8_e4m3fn"
-    
-    model = LLM(
-        model="./qwen3-30b-a3b",
-        tensor_parallel_size=1,
-        dtype=dtype,
-        max_model_len=3072,
-        gpu_memory_utilization=0.8
-    )
-    
-    return model
+def setup_vllm(model_name, quantization="fp16"):
+    from vllm import LLM
+    if quantization == "fp8":
+        return LLM(
+            model=f"./{model_name}",
+            tensor_parallel_size=1,
+            quantization="fp8",
+            kv_cache_dtype="auto",
+            max_model_len=4096,
+            gpu_memory_utilization=0.85,
+            max_num_batched_tokens=65536
+        )
+    else:
+        return LLM(
+            model=f"./{model_name}",
+            tensor_parallel_size=1,
+            dtype="float16",
+            max_model_len=4096,
+            gpu_memory_utilization=0.85,
+            max_num_batched_tokens=65536
+        )
 
-def setup_trtllm_torch(quantization="fp16"):
+def setup_trtllm_torch(model_name, quantization="fp16"):
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"
+    os.environ["TORCH_DYNAMO_DISABLE"] = "1"
     from tensorrt_llm import LLM
     
     if quantization == "fp8":
-        model_path = "./qwen3-30b-a3b_checkpoints_fp8"
+        return LLM(
+            model=f"./{model_name}-fp8",
+            backend="pytorch",
+            max_num_tokens=65536,
+            max_batch_size=16
+        )
     else:
-        model_path = "./qwen3-30b-a3b"
-    
-    model = LLM(
-        model=model_path,
-        backend="pytorch"  # "torch" -> "pytorch"
-    )
-    
-    return model
+        return LLM(
+            model=f"./{model_name}",
+            backend="pytorch",
+            max_num_tokens=65536,
+            max_batch_size=16
+        )
 
-def setup_trtllm_trt(quantization="fp16"):
-    from tensorrt_llm import LLM
-    
-    model_path = f"./qwen3-30b-a3b_engine_{quantization}"
-    
-    model = LLM(
-        model=model_path
-        # backend는 기본값이 TensorRT이므로 생략
+def setup_trtllm_trt(model_name, quantization="fp16"):
+    from tensorrt_llm._tensorrt_engine import LLM
+    return LLM(
+        model=f"./{model_name}_engine_{quantization}",
+        tokenizer=f"./{model_name}"
     )
-    
-    return model
 
-def measure_ttft(model, prompt, backend_name):
+def clean_vram():
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+def measure_ttft(model, prompts, backend_name):
+    """Measure Time To First Token for batch of 16 prompts"""
     if "vLLM" in backend_name:
         from vllm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=1,
-            temperature=0.1,
-            top_p=0.9
-        )
     else:
         from tensorrt_llm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=1,
-            temperature=0.1,
-            top_p=0.9
-        )
+    
+    sampling_params = SamplingParams(max_tokens=1, temperature=0.1, top_p=0.9)
     
     torch.cuda.synchronize()
     start_time = time.perf_counter()
-    
-    outputs = model.generate([prompt], sampling_params)
-    
+    model.generate(prompts, sampling_params)
     torch.cuda.synchronize()
     end_time = time.perf_counter()
     
-    ttft = end_time - start_time
-    return ttft
+    return (end_time - start_time) * 1000
 
-def measure_tps(model, prompt, backend_name):
+def measure_tps(model, prompts, backend_name):
+    """Measure Tokens Per Second for batch of 16 prompts"""
     if "vLLM" in backend_name:
         from vllm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=1024,
-            temperature=0.1,
-            top_p=0.9,
-            stop=["<|endoftext|>", "<|im_end|>"]
-        )
     else:
         from tensorrt_llm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=1024,
-            temperature=0.1,
-            top_p=0.9,
-            stop=["<|endoftext|>", "<|im_end|>"]
-        )
+    
+    sampling_params = SamplingParams(
+        max_tokens=1024, 
+        temperature=0.1, 
+        top_p=0.9,
+        stop=["<|endoftext|>", "<|im_end|>"]
+    )
     
     torch.cuda.synchronize()
     start_time = time.perf_counter()
-    
-    outputs = model.generate([prompt], sampling_params)
-    
+    outputs = model.generate(prompts, sampling_params)
     torch.cuda.synchronize()
     end_time = time.perf_counter()
     
     total_time = end_time - start_time
     
-    # 출력 구조 처리 - 두 라이브러리 모두 비슷한 구조 사용
-    if "vLLM" in backend_name:
-        generated_text = outputs[0].outputs[0].text
-        num_tokens = len(outputs[0].outputs[0].token_ids) if hasattr(outputs[0].outputs[0], 'token_ids') else len(generated_text.split())
-    else:
-        # TensorRT-LLM의 RequestOutput 구조
-        if hasattr(outputs[0], 'outputs'):
-            generated_text = outputs[0].outputs[0].text
-            num_tokens = len(outputs[0].outputs[0].token_ids) if hasattr(outputs[0].outputs[0], 'token_ids') else len(generated_text.split())
-        else:
-            # 대체 구조인 경우
-            generated_text = str(outputs[0])
-            num_tokens = len(generated_text.split())
+    total_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
+    avg_tokens_per_request = total_tokens / len(outputs)
+    total_tps = total_tokens / total_time
     
-    tps = num_tokens / total_time if total_time > 0 else 0
+    generated_text = outputs[0].outputs[0].text
     
-    return tps, num_tokens, generated_text, total_time
+    return total_tps, total_tokens, generated_text, total_time
 
-def measure_inference(model, prompt, backend_name):
+def measure_inference(model, prompts, backend_name):
+    """Measure inference performance for batch of 16 prompts"""
     print(f"\n{'='*50}")
-    print(f"Testing {backend_name}")
+    print(f"Testing {backend_name} (Batch Size: {len(prompts)})")
     print(f"{'='*50}")
     
-    # Warmup runs (2회)
     for i in range(2):
-        try:
-            _ = measure_ttft(model, prompt, backend_name)
-            print(f"Warmup {i+1}/2 completed")
-        except:
-            print(f"Warmup {i+1}/2 failed, continuing...")
+        measure_tps(model, prompts, backend_name)
+        print(f"Warmup {i+1}/2 completed")
     
-    # TTFT measurement (1 token)
     print("Measuring TTFT (1 token)...")
-    ttft = measure_ttft(model, prompt, backend_name)
+    ttft = measure_ttft(model, prompts, backend_name)
     
-    # TPS measurement (full generation)
     print("Measuring TPS (full generation)...")
-    tps, num_tokens, generated_text, total_time = measure_tps(model, prompt, backend_name)
+    tps, num_tokens, generated_text, total_time = measure_tps(model, prompts, backend_name)
     
-    print(f"Generated tokens: {num_tokens}")
+    print(f"Generated tokens: {num_tokens} (total across {len(prompts)} requests)")
+    print(f"Average tokens per request: {num_tokens / len(prompts):.1f}")
     print(f"Total generation time: {total_time:.3f}s")
-    print(f"TTFT: {ttft:.3f}s")
-    print(f"TPS: {tps:.2f} tokens/sec")
+    print(f"TTFT: {ttft:.3f} ms")
+    print(f"TPS: {tps:.2f} tokens/sec (total throughput)")
     print(f"Generated text preview: {generated_text[:100]}...")
     
     return {
@@ -164,79 +163,57 @@ def measure_inference(model, prompt, backend_name):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="qwen3-30b-a3b", help="Model name/path")
     parser.add_argument("--prompt_file", default="prompts.txt", help="Prompt file path")
     parser.add_argument("--quantization", default="fp16", choices=["fp16", "fp8"], help="Quantization type")
     parser.add_argument("--backends", nargs="+", default=["vllm", "torch", "trt"], 
                       choices=["vllm", "torch", "trt"], help="Backends to test")
     args = parser.parse_args()
     
-    # Read prompt from file
-    try:
-        prompt = read_prompt(args.prompt_file)
-        print(f"Loaded prompt from {args.prompt_file}")
-        print(f"Quantization: {args.quantization.upper()}")
-        print(f"Prompt: {prompt[:100]}...")
-    except FileNotFoundError:
-        print(f"Prompt file {args.prompt_file} not found!")
-        return
+    prompts = read_prompts(args.prompt_file)
+    print(f"Loaded {len(prompts)} prompts from {args.prompt_file}")
+    print(f"Quantization: {args.quantization.upper()}")
+    print(f"First prompt preview: {prompts[0][:100]}...")
     
     results = []
     
-    # Test each backend
     for backend in args.backends:
-        try:
-            if backend == "vllm":
-                if not os.path.exists("./qwen3-30b-a3b"):
-                    print(f"Skipping vLLM: model directory not found")
-                    continue
-                model = setup_vllm(args.quantization)
-                result = measure_inference(model, prompt, f"vLLM ({args.quantization.upper()})")
-                
-            elif backend == "torch":
-                model_path = "./qwen3-30b-a3b_checkpoints_fp8" if args.quantization == "fp8" else "./qwen3-30b-a3b"
-                if not os.path.exists(model_path):
-                    print(f"Skipping TensorRT-LLM Torch: {model_path} not found")
-                    continue
-                model = setup_trtllm_torch(args.quantization)
-                result = measure_inference(model, prompt, f"TensorRT-LLM Torch ({args.quantization.upper()})")
-                
-            elif backend == "trt":
-                engine_path = f"./qwen3-30b-a3b_engine_{args.quantization}"
-                if not os.path.exists(engine_path):
-                    print(f"Skipping TensorRT-LLM TRT: {engine_path} not found")
-                    continue
-                model = setup_trtllm_trt(args.quantization)
-                result = measure_inference(model, prompt, f"TensorRT-LLM TRT ({args.quantization.upper()})")
+        if backend == "vllm":
+            model = setup_vllm(args.model, args.quantization)
+            result = measure_inference(model, prompts, f"vLLM ({args.quantization.upper()})")
             
-            results.append(result)
+        elif backend == "torch":
+            model = setup_trtllm_torch(args.model, args.quantization)
+            result = measure_inference(model, prompts, f"Torch ({args.quantization.upper()})")
             
-        except Exception as e:
-            print(f"Error with {backend}: {e}")
-            continue
+        elif backend == "trt":
+            model = setup_trtllm_trt(args.model, args.quantization)
+            result = measure_inference(model, prompts, f"TRT ({args.quantization.upper()})")
+        
+        results.append(result)
+        
+        # VRAM 청소
+        del model
+        clean_vram()
+        print(f"VRAM cleaned after {backend}")
     
-    # Summary comparison
-    print(f"\n{'='*70}")
-    print("PERFORMANCE COMPARISON SUMMARY")
-    print(f"{'='*70}")
-    print(f"{'Backend':<20} {'TTFT (s)':<12} {'TPS':<12} {'Tokens':<8} {'Total (s)':<10}")
-    print(f"{'-'*70}")
+    # 결과 요약
+    print(f"\n{'='*80}")
+    print("BATCH PERFORMANCE COMPARISON SUMMARY (16 Prompts)")
+    print(f"{'='*80}")
+    print(f"{'Backend':<20} {'TTFT (ms)':<12} {'Total TPS':<12} {'Total Tokens':<12} {'Total (s)':<10}")
+    print(f"{'-'*80}")
     
     for result in results:
-        print(f"{result['backend']:<20} {result['ttft']:<12.3f} {result['tps']:<12.2f} {result['num_tokens']:<8} {result['total_time']:<10.3f}")
+        print(f"{result['backend']:<20} {result['ttft']:<12.3f} {result['tps']:<12.2f} {result['num_tokens']:<12} {result['total_time']:<10.3f}")
     
-    # Find fastest
-    if results:
-        fastest_tps = max(results, key=lambda x: x['tps'])
-        fastest_ttft = min(results, key=lambda x: x['ttft'])
-        
-        print(f"\nFastest TPS: {fastest_tps['backend']} ({fastest_tps['tps']:.2f} tokens/sec)")
-        print(f"Fastest TTFT: {fastest_ttft['backend']} ({fastest_ttft['ttft']:.3f}s)")
-        
-        if len(results) > 1:
-            speedup_tps = fastest_tps['tps'] / min(result['tps'] for result in results)
-            speedup_ttft = max(result['ttft'] for result in results) / fastest_ttft['ttft']
-            print(f"TPS Speedup: {speedup_tps:.2f}x")
-            print(f"TTFT Speedup: {speedup_ttft:.2f}x")
+    # 최고 성능
+    fastest_tps = max(results, key=lambda x: x['tps'])
+    fastest_ttft = min(results, key=lambda x: x['ttft'])
+    
+    print(f"\nFastest Total TPS: {fastest_tps['backend']} ({fastest_tps['tps']:.2f} tokens/sec)")
+    print(f"Fastest TTFT: {fastest_ttft['backend']} ({fastest_ttft['ttft']:.3f}ms)")
+    print(f"Average tokens per request: {fastest_tps['num_tokens'] / 16:.1f}")
 
 if __name__ == "__main__":
     main()
