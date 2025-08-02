@@ -6,3 +6,4 @@ qwen3-30b-a3b_engine*/
 *.pth
 *.safetensors
 *.bin
+model.cache
