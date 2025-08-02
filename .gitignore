@@ -1,0 +1,7 @@
+# Exclude model directories and checkpoints
+qwen3-30b-a3b/
+qwen3-30b-a3b_checkpoints*/
+qwen3-30b-a3b_engine*/
+*.pth
+*.safetensors
+*.bin

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-TensorRT-LLM Engine Builder Script - Universal Quantization Support
-All parameters included version based on official documentation
+TensorRT-LLM Engine Builder Script - H100 Optimized Configuration
+Complete implementation with all 70+ available parameters
 
-Based on TensorRT-LLM 0.21.0rc1 official documentation:
+H100 Specific Optimizations:
+- FP8 Native Support (4th Gen Tensor Cores)
+- Low Latency GEMM Plugins (SM90 Hopper)
+- 3TB/s Memory Bandwidth Utilization
+- Advanced Fusion Optimizations
+
+Based on TensorRT-LLM 1.0.0rc5 official documentation:
 https://nvidia.github.io/TensorRT-LLM/commands/trtllm-build.html
 """
 
@@ -46,19 +52,19 @@ def build_trtllm_engine(quantization="fp16"):
     print(f"Engine directory: {engine_dir}")
     
     # ==========================================================================
-    # TENSORRT-LLM BUILD COMMAND - CORRECTED OPTIONS (BASED ON ACTUAL ERROR)
+    # TENSORRT-LLM BUILD COMMAND - COMPLETE OPTIONS IMPLEMENTATION
     # ==========================================================================
     cmd = [
         "trtllm-build",
         
         # ======================================================================
-        # MANDATORY PARAMETERS (Required parameters)
+        # MANDATORY PARAMETERS
         # ======================================================================
         "--checkpoint_dir", checkpoint_dir,  # TensorRT-LLM checkpoint directory path (required)
         "--output_dir", engine_dir,          # Engine and config file save directory (default: engine_outputs)
         
         # ======================================================================
-        # MODEL CONFIGURATION (Model settings) - All optional
+        # MODEL CONFIGURATION
         # ======================================================================
         # "--model_config", "path/to/config.json",     # TensorRT-LLM checkpoint config file path (default: None)
         # "--build_config", "path/to/build.json",     # TensorRT-LLM build config file path (default: None)
@@ -66,148 +72,149 @@ def build_trtllm_engine(quantization="fp16"):
         # "--model_cls_name", "CustomModel",          # Custom TensorRT-LLM model class name (default: None)
         
         # ======================================================================
-        # BATCH AND SEQUENCE CONFIGURATION (Batch and sequence settings)
+        # BATCH AND SEQUENCE CONFIGURATION
         # ======================================================================
         "--max_batch_size", "1",            # Maximum number of requests the engine can schedule (default: 2048)
         "--max_input_len", "2048",           # Maximum input length for a single request (default: 1024)
         "--max_seq_len", "3072",             # Maximum total length including prompt+output (default: None, inferred from model config)
         "--max_beam_width", "1",             # Maximum beam count for beam search decoding (default: 1)
-        "--max_num_tokens", "8192",         # Maximum tokens per batch after padding removal (default: 8192)
+        "--max_num_tokens", "6144",         # Maximum tokens per batch after padding removal - optimized for memory (default: 8192)
         "--opt_num_tokens", "3072",          # Optimal tokens per batch after padding removal (default: max_batch_size * max_beam_width)
         # "--max_encoder_input_len", "1024", # Maximum encoder input length for encoder-decoder models (default: 1024)
         # "--max_prompt_embedding_table_size", "0", # Maximum size for prompt tuning or multimodal input (default: 0)
         
         # ======================================================================
-        # KV CACHE CONFIGURATION (KV cache settings)
+        # KV CACHE CONFIGURATION
         # ======================================================================
         "--kv_cache_type", "paged",          # KV cache type (continuous/paged/disabled, default: None)
         "--tokens_per_block", "128",         # Tokens per block for paged KV cache (default: 32)
+        "--paged_kv_cache", "enable",      # Enable paged KV cache (enable/disable, default: enable if kv_cache_type=paged)
         
         # ======================================================================
-        # PLUGIN CONFIGURATION - ATTENTION (Plugin settings - Attention)
+        # TIMING CACHE AND PROFILING
         # ======================================================================
-        "--gpt_attention_plugin", "auto",    # Attention plugin for GPT-style decoder models (auto/float16/float32/bfloat16/int32/disable, default: auto)
-        # "--bert_attention_plugin", "auto",  # Attention plugin for BERT-style encoder models (auto/float16/float32/bfloat16/int32/disable, default: auto)
+        # "--input_timing_cache", "qwen_timing.cache",   # Timing cache file path to read (default: None)
+        # "--output_timing_cache", "qwen_timing.cache",  # Timing cache file path to write (default: model.cache)
+        "--profiling_verbosity", "detailed", # Profiling verbosity for generated TensorRT engine (layer_names_only/detailed/none, default: layer_names_only)
         
         # ======================================================================
-        # PLUGIN CONFIGURATION - GEMM (Plugin settings - GEMM)
+        # PLUGIN CONFIGURATION - ATTENTION
+        # ======================================================================
+        "--gpt_attention_plugin", "auto",    # Attention plugin for GPT-style decoder models (default: auto)
+        "--bert_attention_plugin", "auto",   # Attention plugin for BERT-style encoder models (default: auto)
+        
+        # ======================================================================
+        # PLUGIN CONFIGURATION - GEMM
         # ======================================================================
     ]
     
     # Add quantization-specific GEMM plugin settings
     if quantization == "fp8":
         cmd.extend([
-            "--gemm_plugin", "fp8",             # General GEMM plugin for FP8
-            "--fp8_rowwise_gemm_plugin", "auto", # Rowwise GEMM plugin for FP8
-            # "--gemm_swiglu_plugin", "fp8",       # GEMM + SwiGLU fusion plugin - FP8 only on Hopper, not supported on L4
-            # "--low_latency_gemm_plugin", "fp8",  # Low latency GEMM plugin - Hopper architecture only, not supported on L4
-            # "--low_latency_gemm_swiglu_plugin", "fp8", # Low latency GEMM + SwiGLU fusion plugin - Hopper architecture only
+            # H100 optimized FP8 GEMM plugins
+            "--gemm_plugin", "fp8",                      # General GEMM plugin for FP8 precision (default: auto)
+            "--fp8_rowwise_gemm_plugin", "auto",         # Rowwise GEMM plugin for FP8 (default: disable)
+            "--low_latency_gemm_plugin", "fp8",          # Low latency GEMM plugin - H100 SM90 optimized (default: disable)
+            "--gemm_swiglu_plugin", "fp8",               # GEMM + SwiGLU fusion - fallback option (default: disable)
+            "--low_latency_gemm_swiglu_plugin", "fp8",   # Low latency GEMM + SwiGLU fusion - priority option (default: disable)
         ])
     else:  # fp16, bf16, or other quantization
         cmd.extend([
-            "--gemm_plugin", "auto",            # General GEMM plugin - auto for non-FP8
-            "--fp8_rowwise_gemm_plugin", "disable", # Disable FP8 rowwise for non-FP8 quantization
+            "--gemm_plugin", "auto",                     # General GEMM plugin - auto for non-FP8 (default: auto)
+            "--fp8_rowwise_gemm_plugin", "disable",      # Disable FP8 rowwise for non-FP8 quantization (default: disable)
         ])
     
     cmd.extend([
-        # "--gemm_allreduce_plugin", "disable", # GEMM + AllReduce kernel fusion plugin (float16/bfloat16/disable, default: None)
+        # ======================================================================
+        # PLUGIN CONFIGURATION - OTHERS
+        # ======================================================================
+        "--nccl_plugin", "auto",             # NCCL plugin for multi-GPU communication (default: auto)
+        "--moe_plugin", "auto",              # MoE layer acceleration plugin (default: auto)
+        "--mamba_conv1d_plugin", "auto",     # Mamba conv1d operator acceleration plugin (default: auto)
+        "--lora_plugin", "disable",          # LoRA plugin enable (default: None)
+        "--dora_plugin", "disable",          # DoRA plugin enable (default: disable)
+        "--gemm_allreduce_plugin", "disable", # GEMM + AllReduce kernel fusion plugin (default: None)
         
         # ======================================================================
-        # PLUGIN CONFIGURATION - OTHERS (Plugin settings - Others)
+        # FUSION OPTIMIZATION CONFIGURATION
         # ======================================================================
-        "--nccl_plugin", "auto",             # NCCL plugin - multi-GPU/node support (auto/float16/float32/bfloat16/int32/disable, default: auto)
-        # "--moe_plugin", "auto",             # MoE layer acceleration plugin (auto/float16/float32/bfloat16/int32/disable, default: auto)
-        # "--mamba_conv1d_plugin", "auto",    # Mamba conv1d operator acceleration plugin (auto/float16/float32/bfloat16/int32/disable, default: auto)
-        # "--lora_plugin", "disable",         # LoRA plugin enable (auto/float16/float32/bfloat16/int32/disable, default: None)
-        # "--dora_plugin", "disable",         # DoRA plugin enable (enable/disable, default: disable)
-        
-        # ======================================================================
-        # FUSION OPTIMIZATION CONFIGURATION (Fusion optimization settings)
-        # ======================================================================
-        "--context_fmha", "enable",           # Enable fused multi-head attention in context phase (enable/disable, default: enable)
-        "--use_paged_context_fmha", "enable", # Allow advanced features like KV cache reuse and chunked context (enable/disable, default: enable)
+        "--context_fmha", "enable",          # Enable fused multi-head attention in context phase (default: enable)
+        "--use_paged_context_fmha", "enable", # Allow advanced features like KV cache reuse and chunked context (default: enable)
     ])
     
     # Add quantization-specific context FMHA settings
     if quantization == "fp8":
         cmd.extend([
-            "--use_fp8_context_fmha", "enable",   # Accelerate attention with FP8 context FMHA when FP8 quantization enabled
+            "--use_fp8_context_fmha", "enable",   # Accelerate attention with FP8 context FMHA (default: disable)
         ])
     else:  # fp16, bf16, or other quantization
         cmd.extend([
-            "--use_fp8_context_fmha", "disable",  # Disable FP8 context FMHA for non-FP8 quantization
+            "--use_fp8_context_fmha", "disable",  # Disable FP8 context FMHA for non-FP8 quantization (default: disable)
         ])
     
     cmd.extend([
-        "--norm_quant_fusion", "enable",      # Fuse LayerNorm and quantization kernels into single kernel - auto disabled on L4 (enable/disable, default: disable)
-        "--reduce_fusion", "enable",          # Fuse ResidualAdd and LayerNorm kernels after AllReduce - auto disabled on L4 (enable/disable, default: disable)
-        "--use_fused_mlp", "enable",          # Fuse two Matmul operations into one in Gated-MLP (enable/disable, default: enable)
-        "--user_buffer", "enable",            # Remove additional copy between local-shared buffers in communication kernels - auto disabled on L4 (enable/disable, default: disable)
-        # "--fuse_fp4_quant", "disable",      # Fuse FP4 quantization into attention kernels (enable/disable, default: disable)
+        "--norm_quant_fusion", "enable",      # Fuse LayerNorm and quantization kernels (default: disable)
+        "--reduce_fusion", "enable",          # Fuse ResidualAdd and LayerNorm kernels after AllReduce (default: disable)
+        "--use_fused_mlp", "enable",          # Fuse two Matmul operations into one in Gated-MLP (default: enable)
+        "--user_buffer", "enable",            # Remove additional copy between local-shared buffers (default: disable)
+        "--remove_input_padding", "enable",   # Pack tokens together to reduce computation and memory (default: enable)
+        "--fuse_fp4_quant", "disable",       # Fuse FP4 quantization into attention kernels (default: disable)
+        "--bert_context_fmha_fp32_acc", "disable", # FP32 accumulator for context FMHA in BERT (default: disable)
         
         # ======================================================================
-        # ADVANCED OPTIMIZATION CONFIGURATION (Advanced optimization settings)
+        # ADVANCED OPTIMIZATION CONFIGURATION
         # ======================================================================
-        "--remove_input_padding", "enable",   # Pack different tokens together to reduce computation and memory consumption (enable/disable, default: enable)
-        # "--multiple_profiles", "enable",     # Enable multiple TensorRT optimization profiles - increases engine build time but improves performance (enable/disable, default: disable)
-        # "--paged_state", "enable",          # Paged state for memory-efficient management of RNN states (enable/disable, default: enable)
-        # "--streamingllm", "disable",        # StreamingLLM - use windowed attention for long text, LLAMA only (enable/disable, default: disable)
-        # "--pp_reduce_scatter", "disable",   # Reduce scatter optimization in pipeline parallelization - Mixtral only (enable/disable, default: disable)
-        # "--bert_context_fmha_fp32_acc", "disable", # FP32 accumulator for context FMHA in BERT attention plugin (enable/disable, default: disable)
+        "--multiple_profiles", "disable",    # Enable multiple TensorRT optimization profiles (default: disable)
+        "--paged_state", "enable",           # Paged state for memory-efficient RNN state management (default: enable)
+        "--streamingllm", "disable",         # StreamingLLM - windowed attention for long text (default: disable)
+        "--pp_reduce_scatter", "disable",    # Reduce scatter optimization in pipeline parallelization (default: disable)
         
         # ======================================================================
-        # BUILD OPTIMIZATION CONFIGURATION (Build optimization settings)
+        # BUILD OPTIMIZATION CONFIGURATION
         # ======================================================================
-        "--workers", "4",                     # Number of workers for parallel build (default: 1)
-        # "--weight_sparsity",                 # Enable weight sparsity (default: disable)
-        # "--fast_build",                      # Fast engine build feature - may reduce performance, incompatible with int8/int4 quantization (default: disable)
-        # "--weight_streaming",               # Offload weights to CPU and stream load at runtime (default: disable)
-        # "--strip_plan",                     # Assume refit weights are identical to build time and remove weights from final engine (default: disable)
+        "--workers", "8",                     # Number of workers for parallel building - H100 optimized (default: 1)
+        # Note: weight_sparsity is a flag option, not requiring a value
+        # Note: fast_build is a flag option, not requiring a value  
+        # Note: weight_streaming is a flag option, not requiring a value
+        # Note: strip_plan is a flag option, not requiring a value
         
         # ======================================================================
-        # TIMING CACHE AND PROFILING (Timing cache and profiling)
+        # LOGGING AND DEBUGGING
         # ======================================================================
-        # "--input_timing_cache", "qwen_1.5b_timing.cache",   # Timing cache file path to read (default: None, ignored if file doesn't exist)
-        # "--output_timing_cache", "qwen_1.5b_timing.cache",  # Timing cache file path to write (default: model.cache)
-        "--profiling_verbosity", "detailed", # Profiling verbosity for generated TensorRT engine (layer_names_only/detailed/none, default: layer_names_only)
+        "--log_level", "info",                # Logging level (default: info)
+        # "--monitor_memory",                  # Enable memory monitor during engine build (default: False)
+        # "--enable_debug_output",            # Enable debug output (default: False)
+        # "--dry_run",                        # Run build process without actual engine build (default: False)
+        # "--visualize_network", "path/to/dir", # Export TensorRT network to ONNX for debugging (default: None)
         
         # ======================================================================
-        # LOGGING AND DEBUGGING (Logging and debugging)
+        # LOGITS CONFIGURATION
         # ======================================================================
-        "--log_level", "info",                # Logging level (internal_error/error/warning/info/verbose/debug/trace, default: info)
-        # "--monitor_memory", "enable",         # Enable memory monitor during engine build (default: disable)
-        # "--enable_debug_output",            # Enable debug output (default: disable)
-        # "--dry_run",                        # Run build process excluding actual engine build - for debugging (default: disable)
-        # "--visualize_network", "path/to/dir", # Directory to export TensorRT network to ONNX for debugging before engine build (default: None)
+        # "--logits_dtype", "float16",        # Data type for logits (default: None)
+        # "--gather_context_logits",          # Enable context logits gathering (default: False)
+        # "--gather_generation_logits",       # Enable generation logits gathering (default: False)
+        # "--gather_all_token_logits",        # Enable all token logits gathering (default: False)
         
         # ======================================================================
-        # LOGITS CONFIGURATION (Logits related settings)
+        # LORA CONFIGURATION
         # ======================================================================
-        # "--logits_dtype", "float16",        # Data type for logits (float16/float32, default: None)
-        # "--gather_context_logits",          # Enable context logits gathering (default: disable)
-        # "--gather_generation_logits",       # Enable generation logits gathering (default: disable)
-        # "--gather_all_token_logits",        # Enable all token logits gathering - enables both context and generation logits (default: disable)
+        # "--lora_dir", "path/to/lora1", "path/to/lora2", # LoRA weight directories (default: None)
+        # "--lora_ckpt_source", "hf",         # LoRA checkpoint source type (default: hf)
+        # "--lora_target_modules", "attn_qkv", "attn_dense", # Target module names for LoRA (default: None)
+        # "--max_lora_rank", "64",            # Maximum LoRA rank for workspace calculation (default: 64)
         
         # ======================================================================
-        # LORA CONFIGURATION (LoRA related settings) - Valid only when lora_plugin enabled
+        # SPECULATIVE DECODING CONFIGURATION
         # ======================================================================
-        # "--lora_dir", "path/to/lora1", "path/to/lora2", # LoRA weight directories (default: None, multiple allowed, first one for config)
-        # "--lora_ckpt_source", "hf",         # LoRA checkpoint source type (hf/nemo, default: hf)
-        # "--lora_target_modules", "attn_qkv", "attn_dense", # Target module names for LoRA application (default: None, choices: attn_qkv/attn_q/attn_k/attn_v/attn_dense/mlp_h_to_4h/mlp_4h_to_h/mlp_gate/cross_attn_qkv/cross_attn_q/cross_attn_k/cross_attn_v/cross_attn_dense/moe_h_to_4h/moe_4h_to_h/moe_gate/moe_router/mlp_router/mlp_gate_up)
-        # "--max_lora_rank", "64",            # Maximum LoRA rank for various LoRA modules - for workspace size calculation (default: 64)
+        # "--speculative_decoding_mode", "none", # Speculative decoding mode (default: None)
+        # "--max_draft_len", "0",             # Maximum draft token length for speculative decoding (default: 0)
         
         # ======================================================================
-        # SPECULATIVE DECODING CONFIGURATION (Speculative decoding settings)
-        # ======================================================================
-        # "--speculative_decoding_mode", "none", # Speculative decoding mode (draft_tokens_external/lookahead_decoding/medusa/explicit_draft_tokens/eagle, default: None)
-        # "--max_draft_len", "0",             # Maximum draft token length for speculative decoding target model (default: 0)
-        
-        # ======================================================================
-        # AUTO PARALLELIZATION CONFIGURATION (Auto parallelization settings)
+        # AUTO PARALLELIZATION CONFIGURATION
         # ======================================================================
         # "--auto_parallel", "1",             # MPI world size for auto parallelization (default: 1)
-        # "--gpus_per_node", "8",             # Number of GPUs per node in multi-node setup - cluster spec (default: 8)
-        # "--cluster_key", "L4",              # Unique name for target GPU type (A100-SXM-80GB/A100-SXM-40GB/A100-PCIe-80GB/A100-PCIe-40GB/H100-SXM/H100-PCIe/H20/H200-SXM/H200-NVL/A40/A30/A10/A10G/L40S/L40/L20/L4/L2, default: None, inferred from current GPU type if not specified)
+        # "--gpus_per_node", "8",             # Number of GPUs per node in multi-node setup (default: 8)
+        # "--cluster_key", "H100-SXM",       # Target GPU type - H100 optimized (default: None, auto-detected)
     ])
     
     print("=" * 80)
@@ -230,12 +237,12 @@ def build_trtllm_engine(quantization="fp16"):
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description="TensorRT-LLM Engine Builder - Universal Quantization Support")
+    parser = argparse.ArgumentParser(description="TensorRT-LLM Engine Builder - H100 Optimized Configuration")
     parser.add_argument("--quantization", type=str, default="fp16", 
                        choices=["fp16", "fp8", "bf16"],
                        help="Quantization type (default: fp16)")
-    parser.add_argument("--model_name", type=str, default="qwen2.5-1.5b-instruct",
-                       help="Model name (default: qwen2.5-1.5b-instruct)")
+    parser.add_argument("--model_name", type=str, default="qwen3-30b-a3b",
+                       help="Model name (default: qwen3-30b-a3b)")
     
     args = parser.parse_args()
     
