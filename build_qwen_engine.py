@@ -75,11 +75,11 @@ def build_trtllm_engine(quantization="fp16"):
         # BATCH AND SEQUENCE CONFIGURATION - BATCH SIZE 16 + 2K INPUT OPTIMIZED
         # ======================================================================
         "--max_batch_size", "16",           # Maximum number of requests the engine can schedule - increased for batch processing (default: 2048)
-        "--max_input_len", "2500",           # Maximum input length for a single request - 2K + buffer (default: 1024)
-        "--max_seq_len", "4096",             # Maximum total length including prompt+output - 2K input + 2K output (default: None, inferred from model config)
+        "--max_input_len", "2048",           # Maximum input length for a single request - 2K + buffer (default: 1024)
+        "--max_seq_len", "3072",             # Maximum total length including prompt+output - 2K input + 2K output (default: None, inferred from model config)
         "--max_beam_width", "1",             # Maximum beam count for beam search decoding (default: 1)
-        "--max_num_tokens", "65536",         # Maximum tokens per batch after padding removal - 16 * 4096 for 2K input processing (default: 8192)
-        "--opt_num_tokens", "32768",         # Optimal tokens per batch after padding removal - 16 * 2048 optimal (default: max_batch_size * max_beam_width)
+        "--max_num_tokens", "49152",         # Maximum tokens per batch after padding removal - 16 * 3072 for total sequence (default: 8192)
+        "--opt_num_tokens", "49152",         # Optimal tokens per batch after padding removal - 16 * 3072 for optimal performance (default: max_batch_size * max_beam_width)
         # "--max_encoder_input_len", "1024", # Maximum encoder input length for encoder-decoder models (default: 1024)
         # "--max_prompt_embedding_table_size", "0", # Maximum size for prompt tuning or multimodal input (default: 0)
         
@@ -87,7 +87,7 @@ def build_trtllm_engine(quantization="fp16"):
         # KV CACHE CONFIGURATION - BATCH SIZE 16 OPTIMIZED
         # ======================================================================
         "--kv_cache_type", "paged",          # KV cache type (continuous/paged/disabled, default: None)
-        "--tokens_per_block", "32",         # Tokens per block for paged KV cache - increased for batch processing (default: 32)
+        "--tokens_per_block", "512",          # Tokens per block for paged KV cache - H100 optimized for 3072 seq_len (default: 32)
         "--paged_kv_cache", "enable",      # Enable paged KV cache (enable/disable, default: enable if kv_cache_type=paged)
         
         # ======================================================================

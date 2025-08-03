@@ -6,68 +6,66 @@ import os
 import gc
 
 def read_prompts(file_path="prompts.txt", num_prompts=16):
-    """Read 16 prompts from file (5-line prompts separated by blank lines)"""
+    """Read 16 prompts from file optimized for 2048 input tokens"""
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read().strip()
     
-    prompt_blocks = [block.strip() for block in content.split('\n\n') if block.strip()]
-    
-    prompts = []
-    for block in prompt_blocks:
-        single_prompt = ' '.join(line.strip() for line in block.split('\n') if line.strip())
-        if single_prompt:
-            prompts.append(single_prompt[:2000])
-    
-    while len(prompts) < num_prompts:
-        if prompts:
-            prompts.append(prompts[0])
-        else:
-            single_prompt = ' '.join(line.strip() for line in content.split('\n') if line.strip())
-            prompts = [single_prompt[:2000]] * num_prompts
-            break
-    
-    return prompts[:num_prompts]
+    prompt_blocks = [block.strip() for block in content.split('\n') if block.strip()]
+    return prompt_blocks[:num_prompts]
 
 def setup_vllm(model_name, quantization="fp16"):
     from vllm import LLM
+    # Optimized for 16 batch × 3072 seq_len (2048 input + 1024 output)
     if quantization == "fp8":
         return LLM(
             model=f"./{model_name}",
             tensor_parallel_size=1,
             quantization="fp8",
             kv_cache_dtype="auto",
-            max_model_len=4096,
-            gpu_memory_utilization=0.85,
-            max_num_batched_tokens=65536
+            max_model_len=3072,                    # 2048 input + 1024 output
+            gpu_memory_utilization=0.95,           # Increased for batch 16 optimization
+            max_num_batched_tokens=49152,          # 16 × 3072 = 49152 for exact fit
+            block_size=128,                         # Optimized block size for H100
+            swap_space=4,                          # CPU offload for larger batches
+            disable_log_stats=True,                # Reduce logging overhead
+            enforce_eager=False,                   # Allow CUDA graphs for optimization
+            max_num_seqs=16                        # Exact batch size limit
         )
     else:
         return LLM(
             model=f"./{model_name}",
             tensor_parallel_size=1,
             dtype="float16",
-            max_model_len=4096,
-            gpu_memory_utilization=0.85,
-            max_num_batched_tokens=65536
+            max_model_len=3072,                    # 2048 input + 1024 output
+            gpu_memory_utilization=0.95,           # Increased for batch 16 optimization
+            max_num_batched_tokens=49152,          # 16 × 3072 = 49152 for exact fit
+            block_size=128,                         # Optimized block size for H100
+            swap_space=4,                          # CPU offload for larger batches
+            disable_log_stats=True,                # Reduce logging overhead
+            enforce_eager=False,                   # Allow CUDA graphs for optimization
+            max_num_seqs=16                        # Exact batch size limit
         )
 
 def setup_trtllm_torch(model_name, quantization="fp16"):
+    # Disable PyTorch optimizations that conflict with TensorRT-LLM
     os.environ["TORCH_COMPILE_DISABLE"] = "1"
     os.environ["TORCH_DYNAMO_DISABLE"] = "1"
     from tensorrt_llm import LLM
     
+    # Basic configuration for TensorRT-LLM 1.0.0rc5 compatibility
     if quantization == "fp8":
         return LLM(
             model=f"./{model_name}-fp8",
             backend="pytorch",
-            max_num_tokens=65536,
-            max_batch_size=16
+            max_num_tokens=49152,                  # 16 × 3072 = 49152 for exact fit
+            max_batch_size=16                      # Target batch size
         )
     else:
         return LLM(
             model=f"./{model_name}",
-            backend="pytorch",
-            max_num_tokens=65536,
-            max_batch_size=16
+            backend="pytorch", 
+            max_num_tokens=49152,                  # 16 × 3072 = 49152 for exact fit
+            max_batch_size=16                      # Target batch size
         )
 
 def setup_trtllm_trt(model_name, quantization="fp16"):
@@ -78,9 +76,13 @@ def setup_trtllm_trt(model_name, quantization="fp16"):
     )
 
 def clean_vram():
+    """Clean VRAM and wait for complete memory release"""
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+    print("VRAM cleanup completed, waiting 10 seconds for complete memory release...")
+    time.sleep(10)
+    print("Memory release wait completed.")
 
 def measure_ttft(model, prompts, backend_name):
     """Measure Time To First Token for batch of 16 prompts"""
@@ -93,7 +95,7 @@ def measure_ttft(model, prompts, backend_name):
     
     torch.cuda.synchronize()
     start_time = time.perf_counter()
-    model.generate(prompts, sampling_params)
+    outputs = model.generate(prompts, sampling_params)
     torch.cuda.synchronize()
     end_time = time.perf_counter()
     
